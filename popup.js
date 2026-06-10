@@ -102,14 +102,66 @@ function extractVenue(text) {
 }
 
 function getEventType(title) {
-    const lower = title.toLowerCase();
+  const lower = title.toLowerCase();
 
-    if (lower.includes("assignment")) return "assignment";
-    if (lower.includes("quiz")) return "quiz";
-    if (lower.includes("exam")) return "exam";
-    if (lower.includes("test")) return "test";
+  if (lower.includes("assignment")) return "assignment";
+  if (lower.includes("quiz")) return "quiz";
+  if (lower.includes("exam")) return "exam";
+  if (lower.includes("test")) return "test";
 
-    return "other";
+  return "other";
+}
+
+function toGoogleDateTime(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null;
+
+  const date = new Date(`${dateStr} ${timeStr}`);
+
+  if (isNaN(date.getTime())) return null;
+
+  const pad = (n) => String(n).padStart(2, "0");
+
+  const yyyy = date.getFullYear();
+  const mm = pad(date.getMonth() + 1);
+  const dd = pad(date.getDate());
+  const hh = pad(date.getHours());
+  const min = pad(date.getMinutes());
+  const ss = "00";
+
+  return `${yyyy}${mm}${dd}T${hh}${min}${ss}`;
+}
+
+function createGoogleCalendarUrl(event) {
+  const start = toGoogleDateTime(event.date, event.time);
+
+  if (!start) {
+    alert("Missing or invalid date/time");
+    return null;
+  }
+
+  // default 1 hour duration
+  const startDate = new Date(event.date + " " + event.time);
+
+  const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+
+  const pad = (n) => String(n).padStart(2, "0");
+
+  const format = (d) =>
+    d.getFullYear() +
+    pad(d.getMonth() + 1) +
+    pad(d.getDate()) +
+    "T" +
+    pad(d.getHours()) +
+    pad(d.getMinutes()) +
+    "00";
+
+  const end = format(endDate);
+
+  const title = encodeURIComponent(event.title);
+  const location = encodeURIComponent(event.venue || "");
+  const details = encodeURIComponent("Added via EduAlert Chrome Extension");
+
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&location=${location}&details=${details}`;
 }
 
 //store events in an array
@@ -181,8 +233,8 @@ function handleClick() {
           const card = document.createElement("div");
           card.className = "event-card";
 
-          const type = getEventType(e.title);  
-          
+          const type = getEventType(e.title);
+
           card.innerHTML = `
         <div class="event-title">
         <span class="badge ${type}">
@@ -217,7 +269,13 @@ function handleClick() {
           });
 
           addBtn.addEventListener("click", () => {
-            console.log("Add to calendar:", e);
+            const url = createGoogleCalendarUrl(e);
+
+            if (!url) return;
+
+            chrome.tabs.create({
+              url: url,
+            });
           });
 
           container.appendChild(card);
