@@ -1,20 +1,28 @@
 console.log("CONTENT SCRIPT LOADED");
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    console.log("MESSAGE RECEIVED");
 
     if (request.action === "getPageText") {
-        sendResponse({
-            text: document.body.innerHTML
+
+        const blocks = [];
+
+        // Change this selector to match the structure of the target website
+        const announcements = document.querySelectorAll(".announcement");
+
+        announcements.forEach(el => {
+            const title = el.querySelector("h3")?.innerText || el.innerText.split("\n")[0];
+            const text = el.innerText;
+
+            blocks.push({
+                title: title,
+                text: text
+            });
         });
-        // const titles = [...document.querySelectorAll("h3")]
-        //     .map(h3 => h3.innerText);
-
-        // console.log("Titles found:", titles);
-
-        // sendResponse({
-        //     text: document.body.innerText,
-        //     titles: titles
-        // });
+    
+        sendResponse({
+            blocks:blocks
+        });     
     }
+   
+    return true; // Keep the message channel open for sendResponse
 });
