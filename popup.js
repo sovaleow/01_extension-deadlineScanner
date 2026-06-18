@@ -1,6 +1,11 @@
 //constants
 const main = document.getElementById("scanButton");
 const container = document.querySelector(".update-container");
+const pdfLinks = document.querySelectorAll('a[href$=".pdf"]');
+
+pdfLinks.forEach((link) => {
+  console.log("PDF found:", link.href);
+});
 
 //regex patterns
 const datePatterns = [
@@ -32,7 +37,18 @@ const state = {
   ignored: [],
 };
 
+const seen = new Set();
+
 //functions
+function normalizeEvent(rawData) {
+  return {
+    title: rawData.title || "",
+    date: rawData.date || "",
+    time: rawData.time || "",
+    venue: rawData.venue || "",
+  };
+}
+
 function extractFirstMatch(text, patterns) {
   for (const pattern of patterns) {
     const match = text.match(pattern);
@@ -58,6 +74,10 @@ function isValidDate(str) {
 
 function isValidTime(str) {
   return /\d{1,2}:\d{2}/.test(str); // must contain time
+}
+
+function isDateRange(str) {
+  return /\d{1,2}\s+[A-Za-z]+\s*-\s*\d{1,2}\s+[A-Za-z]+/.test(str);
 }
 
 function getNextWeekday(dayName) {
@@ -98,15 +118,55 @@ function extractVenue(text) {
   return "";
 }
 
+function extractFromTables() {
+  const events = [];
+
+  const tables = document.querySelectorAll("table");
+
+  tables.forEach((table) => {
+    const headers = Array.from(table.querySelectorAll("th")).map((th) =>
+      th.textContent.toLowerCase(),
+    );
+
+    const hasAssessment = headers.some((h) => h.includes("assessment"));
+
+    const hasDateTime = headers.some((h) => h.includes("date"));
+
+    if (!hasAssessment || !hasDateTime) return;
+
+    const rows = table.querySelectorAll("tr");
+
+    rows.forEach((row, index) => {
+      if (index === 0) return;
+
+      const cells = row.querySelectorAll("td");
+
+      if (cells.length < 3) return;
+
+      events.push({
+        title: cells[1].innerText.trim(),
+        text:
+          cells[1].innerText +
+          " " +
+          cells[2].innerText +
+          " " +
+          (cells[3]?.innerText || ""),
+      });
+    });
+  });
+
+  return events;
+}
+
 function getEventType(title) {
-    const lower = title.toLowerCase();
+  const lower = title.toLowerCase();
 
-    if (lower.includes("assignment")) return "assignment";
-    if (lower.includes("quiz")) return "quiz";
-    if (lower.includes("exam")) return "exam";
-    if (lower.includes("test")) return "test";
+  if (lower.includes("assignment")) return "assignment";
+  if (lower.includes("quiz")) return "quiz";
+  if (lower.includes("exam")) return "exam";
+  if (lower.includes("test")) return "test";
 
-    return "other";
+  return "other";
 }
 
 function toGoogleDateTime(dateStr, timeStr) {
@@ -129,35 +189,34 @@ function toGoogleDateTime(dateStr, timeStr) {
 }
 
 function createGoogleCalendarUrl(event) {
+  const start = toGoogleDateTime(event.date, event.time);
 
-    const start = toGoogleDateTime(event.date, event.time);
+  if (!start) {
+    alert("Missing or invalid date/time");
+    return null;
+  }
 
-    if (!start) {
-        alert("Missing or invalid date/time");
-        return null;
-    }
+  const startDate = new Date(`${event.date} ${event.time}`);
+  const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
 
-    const startDate = new Date(`${event.date} ${event.time}`);
-    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
 
-    const pad = (n) => String(n).padStart(2, "0");
+  const format = (d) =>
+    d.getFullYear() +
+    pad(d.getMonth() + 1) +
+    pad(d.getDate()) +
+    "T" +
+    pad(d.getHours()) +
+    pad(d.getMinutes()) +
+    "00";
 
-    const format = (d) =>
-        d.getFullYear() +
-        pad(d.getMonth() + 1) +
-        pad(d.getDate()) +
-        "T" +
-        pad(d.getHours()) +
-        pad(d.getMinutes()) +
-        "00";
+  const end = format(endDate);
 
-    const end = format(endDate);
+  const title = encodeURIComponent(event.title);
+  const location = encodeURIComponent(event.venue || "");
+  const details = encodeURIComponent("Added via EduAlert Chrome Extension");
 
-    const title = encodeURIComponent(event.title);
-    const location = encodeURIComponent(event.venue || "");
-    const details = encodeURIComponent("Added via EduAlert Chrome Extension");
-
-    return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&location=${location}&details=${details}`;
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&location=${location}&details=${details}`;
 }
 
 function openCalendar(e) {
@@ -165,6 +224,17 @@ function openCalendar(e) {
   if (!url) return;
 
   chrome.tabs.create({ url });
+}
+
+function isNoise(text) {
+  const lower = text.toLowerCase();
+
+  return (
+    lower === "people" ||
+    lower === "news forum" ||
+    /^\d+\.$/.test(lower) || // 1. 2. 3.
+    lower.length < 10
+  );
 }
 
 function renderUI() {
@@ -279,15 +349,38 @@ function handleClick() {
           return;
         }
 
+        console.log('received blocks', response.blocks);
+
+        seen.clear();
         state.active = [];
         state.ignored = [];
 
         response.blocks.forEach((block) => {
           const text = cleanText(block.text);
 
-          let date = extractFirstMatch(text, datePatterns);
-          let time = extractFirstMatch(text, timePatterns);
-          let venue = extractVenue(text);
+          let rawDate = extractFirstMatch(text, datePatterns);
+
+          if (rawDate && isDateRange(text)) {
+            rawDate = "";
+          }
+
+          let date = rawDate;
+          let time = extractFirstMatch(text, timePatterns) || "";
+          let venue = extractVenue(text) || "";
+
+          const isImportant =
+            block.title.toLowerCase().includes("assignment") ||
+            block.title.toLowerCase().includes("quiz") ||
+            block.title.toLowerCase().includes("exam") ||
+            block.text.toLowerCase().includes("deadline");
+
+          if (!date && !time && !venue && !isImportant) return;
+          if (/^(no\.|people|news forum|\d+\.?)$/i.test(block.title.trim())) return;
+          
+          // skip ranges
+          if (isDateRange(date)) {
+            date = "";
+          }
 
           if (!date) {
             const relativeMatch = text.match(relativeDatePattern);
@@ -298,7 +391,10 @@ function handleClick() {
 
           if (!isValidDate(date)) date = "";
           if (!isValidTime(time)) time = "";
+          const key = `${block.title}-${date}-${time}`;
 
+          if (seen.has(key)) return;
+          seen.add(key);
           state.active.push({
             title: block.title,
             date,
@@ -308,11 +404,10 @@ function handleClick() {
         });
 
         renderUI();
-      }
+      },
     );
   });
 }
 
 //event listeners
 main.addEventListener("click", handleClick);
-
