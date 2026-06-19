@@ -1,5 +1,6 @@
 //constants
 const main = document.getElementById("scanButton");
+const openPdfScanner = document.getElementById("openPdfScanner");
 const container = document.querySelector(".update-container");
 const pdfLinks = document.querySelectorAll('a[href$=".pdf"]');
 
@@ -16,9 +17,13 @@ const datePatterns = [
 ];
 
 const timePatterns = [
-  /\d{1,2}:\d{2}\s?(AM|PM)/i, // 11:59 PM
+  /time\s*:\s*(\d{1,2}(?:[:.]\d{2})?\s*(?:AM|PM)?\s*[-–—]\s*\d{1,2}(?:[:.]\d{2})?\s*(?:AM|PM))/i, // Time : 3.00 PM - 4.00 PM
+  /\d{1,2}(?:[:.]\d{2})?\s*(?:AM|PM)?\s*[-–—]\s*\d{1,2}(?:[:.]\d{2})?\s*(?:AM|PM)/i, // 3.00 PM - 4.00 PM
+  /time\s*:\s*(\d{1,2}(?:[:.]\d{2})?\s*(?:AM|PM))/i, // Time : 3.00 PM
+  /\d{1,2}:\d{2}\s?(?:AM|PM)/i, // 11:59 PM
+  /\d{1,2}\.\d{2}\s?(?:AM|PM)/i, // 3.00 PM
   /\d{1,2}:\d{2}/, // 23:59
-  /\d{1,2}\s?(AM|PM)/i, // 9 AM
+  /\d{1,2}\s?(?:AM|PM)/i, // 9 AM
   /noon|midnight/i, // noon / midnight
 ];
 
@@ -27,6 +32,8 @@ const relativeDatePattern =
 
 const venuePatterns = [
   /venue\s*:\s*(.+)/i,
+  /online\s+platform\s*:\s*(.+)/i,
+  /platform\s*:\s*(.+)/i,
   /location\s*:\s*(.+)/i,
   /room\s*:\s*(.+)/i,
   /venue\s*-\s*(.+)/i,
@@ -52,9 +59,22 @@ function normalizeEvent(rawData) {
 function extractFirstMatch(text, patterns) {
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (match) return match[0];
+    if (match) return match[1] || match[0];
   }
   return "";
+}
+
+function extractDate(text) {
+  const date = extractFirstMatch(text, datePatterns);
+  if (!date) return "";
+
+  const escapedDate = date.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const rangePattern = new RegExp(
+    `\\d{1,2}\\s+[A-Za-z]+\\s*[-–—]\\s*${escapedDate}|${escapedDate}\\s*[-–—]\\s*\\d{1,2}\\s+[A-Za-z]+`,
+    "i"
+  );
+
+  return rangePattern.test(text) ? "" : date;
 }
 
 function cleanText(text) {
@@ -73,7 +93,11 @@ function isValidDate(str) {
 }
 
 function isValidTime(str) {
-  return /\d{1,2}:\d{2}/.test(str); // must contain time
+  return /(?:\d{1,2}(?::|\.)\d{2}|\d{1,2})\s*(?:AM|PM)?(?:\s*[-–—]\s*(?:\d{1,2}(?::|\.)\d{2}|\d{1,2})\s*(?:AM|PM)?)?/i.test(str);
+}
+
+function isInvalidEventTitle(title) {
+  return /^(no\.|people|news forum|\d+\.?|to be confirmed(?: later)?\.?|tbc|n\/a)$/i.test(title);
 }
 
 function isDateRange(str) {
@@ -115,6 +139,41 @@ function extractVenue(text) {
     const match = text.match(pattern);
     if (match) return match[1].trim();
   }
+  return "";
+}
+
+function normalizeTimeForDate(timeStr) {
+  return cleanText(timeStr)
+    .replace(/\./g, ":")
+    .replace(/\b(am|pm)\b/g, value => value.toUpperCase());
+}
+
+function getTimeRangeParts(timeStr) {
+  const normalized = normalizeTimeForDate(timeStr);
+  const parts = normalized.split(/\s*[-–—]\s*/);
+  let start = parts[0] || "";
+  let end = parts[1] || "";
+
+  if (end && /\b(?:AM|PM)\b/i.test(end) && !/\b(?:AM|PM)\b/i.test(start)) {
+    start = `${start} ${end.match(/\b(?:AM|PM)\b/i)[0]}`;
+  }
+  if (end && /\b(?:AM|PM)\b/i.test(start) && !/\b(?:AM|PM)\b/i.test(end)) {
+    end = `${end} ${start.match(/\b(?:AM|PM)\b/i)[0]}`;
+  }
+
+  return { start, end };
+}
+
+function getAcademicEventKey(title, text = "") {
+  const value = `${title} ${text}`.toLowerCase();
+
+  if (value.includes("midterm") || value.includes("mid-term")) return "midterm";
+  if (value.includes("final examination") || value.includes("final exam")) return "final-exam";
+  if (value.includes("assignment")) return "assignment";
+  if (value.includes("quiz")) return "quiz";
+  if (value.includes("test")) return "test";
+  if (value.includes("exam")) return "exam";
+
   return "";
 }
 
@@ -163,16 +222,21 @@ function getEventType(title) {
 
   if (lower.includes("assignment")) return "assignment";
   if (lower.includes("quiz")) return "quiz";
+  if (lower.includes("midterm") || lower.includes("mid-term")) return "test";
   if (lower.includes("exam")) return "exam";
   if (lower.includes("test")) return "test";
 
   return "other";
 }
 
-function toGoogleDateTime(dateStr, timeStr) {
+function toGoogleDateTime(dateStr, timeStr, part = "start") {
   if (!dateStr || !timeStr) return null;
 
-  const date = new Date(`${dateStr} ${timeStr}`);
+  const range = getTimeRangeParts(timeStr);
+  const selectedTime = part === "end" ? range.end : range.start;
+  if (!selectedTime) return null;
+
+  const date = new Date(`${dateStr} ${selectedTime}`);
   if (isNaN(date.getTime())) return null;
 
   const pad = (n) => String(n).padStart(2, "0");
@@ -196,8 +260,12 @@ function createGoogleCalendarUrl(event) {
     return null;
   }
 
-  const startDate = new Date(`${event.date} ${event.time}`);
-  const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+  const startRange = getTimeRangeParts(event.time);
+  const startDate = new Date(`${event.date} ${startRange.start}`);
+  const parsedEnd = toGoogleDateTime(event.date, event.time, "end");
+  const endDate = parsedEnd
+    ? new Date(`${event.date} ${startRange.end}`)
+    : new Date(startDate.getTime() + 60 * 60 * 1000);
 
   const pad = (n) => String(n).padStart(2, "0");
 
@@ -214,9 +282,8 @@ function createGoogleCalendarUrl(event) {
 
   const title = encodeURIComponent(event.title);
   const location = encodeURIComponent(event.venue || "");
-  const details = encodeURIComponent("Added via EduAlert Chrome Extension");
 
-  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&location=${location}&details=${details}`;
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&location=${location}`;
 }
 
 function openCalendar(e) {
@@ -332,6 +399,62 @@ function renderUI() {
   });
 }
 
+function loadBlocks(blocks) {
+  seen.clear();
+  state.active = [];
+  state.ignored = [];
+
+  blocks.forEach((block) => {
+    const text = cleanText(block.text);
+    const dateText = cleanText(block.dateText || block.columns?.dateTime || text);
+    const title = cleanText(block.title || "");
+
+    let date = extractDate(dateText) || extractDate(text);
+    let time = extractFirstMatch(text, timePatterns) || "";
+    let venue = extractVenue(text) || cleanText(block.venue || "");
+
+    const isImportant =
+      title.toLowerCase().includes("assignment") ||
+      title.toLowerCase().includes("quiz") ||
+      title.toLowerCase().includes("exam") ||
+      text.toLowerCase().includes("deadline") ||
+      block.source === "pdf-teaching-plan";
+
+    if (!date && !time && !venue && !isImportant) return;
+    if (isInvalidEventTitle(title)) return;
+
+    // skip ranges
+    if (isDateRange(date)) {
+      date = "";
+    }
+
+    if (!date) {
+      const relativeMatch = text.match(relativeDatePattern);
+      if (relativeMatch) {
+        date = getNextWeekday(relativeMatch[1]);
+      }
+    }
+
+    if (!isValidDate(date)) date = "";
+    if (!isValidTime(time)) time = "";
+    if (!date) return;
+
+    const eventKey = block.eventKey || getAcademicEventKey(title, text);
+    const key = eventKey || `${title}-${date}-${time}`;
+
+    if (seen.has(key)) return;
+    seen.add(key);
+    state.active.push({
+      title,
+      date,
+      time,
+      venue,
+    });
+  });
+
+  renderUI();
+}
+
 ///main function
 function handleClick() {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -351,63 +474,16 @@ function handleClick() {
 
         console.log('received blocks', response.blocks);
 
-        seen.clear();
-        state.active = [];
-        state.ignored = [];
-
-        response.blocks.forEach((block) => {
-          const text = cleanText(block.text);
-
-          let rawDate = extractFirstMatch(text, datePatterns);
-
-          if (rawDate && isDateRange(text)) {
-            rawDate = "";
-          }
-
-          let date = rawDate;
-          let time = extractFirstMatch(text, timePatterns) || "";
-          let venue = extractVenue(text) || "";
-
-          const isImportant =
-            block.title.toLowerCase().includes("assignment") ||
-            block.title.toLowerCase().includes("quiz") ||
-            block.title.toLowerCase().includes("exam") ||
-            block.text.toLowerCase().includes("deadline");
-
-          if (!date && !time && !venue && !isImportant) return;
-          if (/^(no\.|people|news forum|\d+\.?)$/i.test(block.title.trim())) return;
-          
-          // skip ranges
-          if (isDateRange(date)) {
-            date = "";
-          }
-
-          if (!date) {
-            const relativeMatch = text.match(relativeDatePattern);
-            if (relativeMatch) {
-              date = getNextWeekday(relativeMatch[1]);
-            }
-          }
-
-          if (!isValidDate(date)) date = "";
-          if (!isValidTime(time)) time = "";
-          const key = `${block.title}-${date}-${time}`;
-
-          if (seen.has(key)) return;
-          seen.add(key);
-          state.active.push({
-            title: block.title,
-            date,
-            time,
-            venue,
-          });
-        });
-
-        renderUI();
+        loadBlocks(response.blocks);
       },
     );
   });
 }
 
+function openPdfScannerPage() {
+  chrome.tabs.create({ url: chrome.runtime.getURL("pdf.html") });
+}
+
 //event listeners
 main.addEventListener("click", handleClick);
+openPdfScanner.addEventListener("click", openPdfScannerPage);

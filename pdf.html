@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="pdf-page.css">
+    <title>EduAlert PDF Scanner</title>
+</head>
+<body>
+    <main class="page">
+        <section class="toolbar">
+            <div>
+                <h1>EduAlert PDF Scanner</h1>
+                <p>Extract assessment events from Part C of a teaching plan.</p>
+            </div>
+
+            <label class="pdf-upload">
+                <span>Select PDF</span>
+                <input id="pdfInput" type="file" accept="application/pdf">
+            </label>
+        </section>
+
+        <section id="status" class="status">Choose a teaching plan PDF to scan.</section>
+        <section id="events" class="events"></section>
+    </main>
+
+    <script src="pdf-lib.min.js"></script>
+    <script src="pdf.js"></script>
+    <script src="pdf-page.js"></script>
+</body>
+</html>
